@@ -1,9 +1,10 @@
-// Step 4: Added basket with keyboard and mouse controls
+// Step 5: Added game timer, chicken animation and cloud movement
 #include <GL/glut.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
+#include <string>
 #include <vector>
 
 static int winW = 1500, winH = 920;
@@ -22,7 +23,6 @@ struct Chicken {
 };
 static Chicken chicken;
 
-// ── NEW: Basket struct ──
 struct Basket {
     float x     = 0.f;
     float y     = -0.8f;
@@ -31,11 +31,14 @@ struct Basket {
 };
 static Basket basket;
 
+static int score    = 0;
+static int timeLeft = 60;
+static int lastTick = 0;
+
 float frand(float a, float b){
     return a + (b-a) * (rand() / (float)RAND_MAX);
 }
 
-// ── NEW: convert window pixel coords to world coords ──
 float windowToWorldX(int mx){
     return worldL + (mx / (float)winW) * (worldR - worldL);
 }
@@ -70,6 +73,12 @@ void drawCircle(float x, float y, float r, int seg=48) {
     glEnd();
 }
 
+void drawText(float x, float y, const std::string& s,
+              void* font = GLUT_BITMAP_HELVETICA_18) {
+    glRasterPos2f(x, y);
+    for(char c : s) glutBitmapCharacter(font, c);
+}
+
 void drawCloud(const Cloud& c) {
     glColor4f(1, 1, 1, 0.9f);
     glPushMatrix();
@@ -101,20 +110,13 @@ void drawChicken() {
     glPopMatrix();
 }
 
-// ── NEW: draw the basket ──
 void drawBasket() {
     glPushMatrix();
     glTranslatef(basket.x, basket.y, 0);
-
-    // Shadow underneath
     glColor4f(0, 0, 0, 0.15f);
     drawRect(0, -0.02f, basket.halfW * 0.95f, 0.02f);
-
-    // Main basket body
     glColor3f(0.65f, 0.35f, 0.15f);
     drawRect(0, 0.f, basket.halfW, basket.h * 0.85f);
-
-    // Weave lines
     glColor3f(0.5f, 0.25f, 0.1f);
     glLineWidth(2);
     glBegin(GL_LINES);
@@ -123,8 +125,6 @@ void drawBasket() {
         glVertex2f( basket.halfW, y);
     }
     glEnd();
-
-    // Top rim
     glColor3f(0.4f, 0.2f, 0.05f);
     glBegin(GL_QUADS);
     glVertex2f(-basket.halfW,      basket.h * 0.85f);
@@ -132,7 +132,6 @@ void drawBasket() {
     glVertex2f( basket.halfW*0.9f, basket.h * 1.05f);
     glVertex2f(-basket.halfW*0.9f, basket.h * 1.05f);
     glEnd();
-
     glPopMatrix();
 }
 
@@ -152,10 +151,10 @@ void drawGradientBG() {
     glColor3f(0.8f, 0.45f, 0.25f); drawRect(hx, hy, hw, hh);
     glColor3f(0.55f, 0.15f, 0.05f);
     glBegin(GL_TRIANGLES);
-    glVertex2f(hx-hw,hy+hh); glVertex2f(hx+hw,hy+hh); glVertex2f(hx,hy+hh*1.8f);
+    glVertex2f(hx-hw, hy+hh); glVertex2f(hx+hw, hy+hh); glVertex2f(hx, hy+hh*1.8f);
     glEnd();
-    glColor3f(0.4f,0.25f,0.1f);  drawRect(hx+hw*0.4f, hy-hh*0.5f, hw*0.25f, hh*0.5f);
-    glColor3f(0.6f,0.8f, 1.0f);  drawRect(hx-hw*0.4f, hy+hh*0.2f, hw*0.3f,  hh*0.3f);
+    glColor3f(0.4f, 0.25f, 0.1f); drawRect(hx+hw*0.4f, hy-hh*0.5f, hw*0.25f, hh*0.5f);
+    glColor3f(0.6f, 0.8f, 1.0f);  drawRect(hx-hw*0.4f, hy+hh*0.2f, hw*0.3f,  hh*0.3f);
     glColor3f(0.2f, 0.65f, 0.3f); drawRect(0, -0.94f, 1.f, 0.14f);
     glLineWidth(2);
     glColor3f(0.15f, 0.5f, 0.2f);
@@ -167,23 +166,23 @@ void drawGradientBG() {
     glEnd();
 }
 
+void drawHUD() {
+    glColor3f(0, 0, 0);
+    drawText(-0.95f, 0.92f, "Score: " + std::to_string(score));
+    drawText(-0.22f, 0.92f, "Time:  " + std::to_string(timeLeft));
+}
+
 void display() {
     glClearColor(0.75f, 0.85f, 0.70f, 1);
     glClear(GL_COLOR_BUFFER_BIT);
     glLoadIdentity();
-
     drawGradientBG();
-
-    // Bamboo stick
     glColor3f(0.5f, 0.35f, 0.15f);
     drawRect(0, 0.65f, 0.92f, 0.018f);
-
     chicken.y = 0.70f;
     drawChicken();
-
-    // ── NEW: draw basket ──
     drawBasket();
-
+    drawHUD();
     glutSwapBuffers();
 }
 
@@ -193,31 +192,57 @@ void reshape(int w, int h) {
     ortho();
 }
 
-// ── NEW: arrow key controls for basket ──
 void special(int key, int, int) {
     if(key == GLUT_KEY_LEFT)  basket.x -= 0.08f;
     if(key == GLUT_KEY_RIGHT) basket.x += 0.08f;
-    // Clamp so basket never goes off screen
     basket.x = std::max(worldL + basket.halfW,
                         std::min(worldR - basket.halfW, basket.x));
-    glutPostRedisplay();
 }
 
-// ── NEW: keyboard controls (A/D keys) ──
 void keyboard(unsigned char key, int, int) {
     if(key == 'a' || key == 'A') basket.x -= 0.08f;
     if(key == 'd' || key == 'D') basket.x += 0.08f;
     basket.x = std::max(worldL + basket.halfW,
                         std::min(worldR - basket.halfW, basket.x));
-    glutPostRedisplay();
 }
 
-// ── NEW: mouse follows basket smoothly ──
 void passiveMotion(int mx, int) {
     float wx = windowToWorldX(mx);
     basket.x = std::max(worldL + basket.halfW,
                         std::min(worldR - basket.halfW, wx));
+}
+
+void updateScene(float dt) {
+    chicken.x += chicken.vx * dt;
+    if(chicken.x >  0.82f){ chicken.x =  0.82f; chicken.vx *= -1; }
+    if(chicken.x < -0.82f){ chicken.x = -0.82f; chicken.vx *= -1; }
+    chicken.bob = 0.01f * sinf(glutGet(GLUT_ELAPSED_TIME) * 0.008f);
+    for(auto& c : clouds){
+        c.x += c.speed * dt;
+        if(c.x > worldR + c.scale * 0.15f){
+            c.x     = worldL - c.scale * 0.15f;
+            c.y     = frand(0.5f, worldT - 0.1f);
+            c.scale = frand(0.5f, 1.2f);
+            c.speed = frand(0.02f, 0.08f);
+        }
+    }
+    static float accumulator = 0;
+    accumulator += dt;
+    if(accumulator >= 1.0f){
+        timeLeft--;
+        accumulator = 0;
+        if(timeLeft < 0) timeLeft = 0;
+    }
+}
+
+void timerFunc(int) {
+    int   now = glutGet(GLUT_ELAPSED_TIME);
+    float dt  = (now - lastTick) / 1000.f;
+    lastTick  = now;
+    dt = std::min(dt, 0.033f);
+    updateScene(dt);
     glutPostRedisplay();
+    glutTimerFunc(16, timerFunc, 0);
 }
 
 int main(int argc, char** argv) {
@@ -228,7 +253,6 @@ int main(int argc, char** argv) {
     glutCreateWindow("Catch The Eggs");
     ortho();
     enableSmooth();
-
     for(int i = 0; i < 5; i++){
         clouds.push_back({
             frand(worldL, worldR),
@@ -237,17 +261,13 @@ int main(int argc, char** argv) {
             frand(0.02f, 0.08f)
         });
     }
-
     glutDisplayFunc(display);
     glutReshapeFunc(reshape);
-
-    // ── NEW: register input callbacks ──
     glutSpecialFunc(special);
     glutKeyboardFunc(keyboard);
     glutPassiveMotionFunc(passiveMotion);
-
+    lastTick = glutGet(GLUT_ELAPSED_TIME);
+    glutTimerFunc(16, timerFunc, 0);
     glutMainLoop();
     return 0;
 }
-
-
