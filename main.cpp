@@ -1,4 +1,4 @@
-// Step 7: Added collision detection, scoring, particles and float texts
+// Step 8: Added poop object, lives system and game over screen
 #include <GL/glut.h>
 #include <algorithm>
 #include <cmath>
@@ -31,7 +31,8 @@ struct Basket {
 };
 static Basket basket;
 
-enum class ObjType { NormalEgg, BlueEgg, GoldenEgg };
+// ── NEW: added Poop to the enum ──
+enum class ObjType { NormalEgg, BlueEgg, GoldenEgg, Poop };
 
 struct Falling {
     ObjType type;
@@ -44,7 +45,6 @@ struct Falling {
 };
 static std::vector<Falling> objs;
 
-// ── NEW: particle struct for burst effect on catch ──
 struct Particle {
     float x, y;
     float vx, vy;
@@ -54,7 +54,6 @@ struct Particle {
 };
 static std::vector<Particle> parts;
 
-// ── NEW: floating score text struct ──
 struct FloatText {
     float       x, y;
     std::string s;
@@ -70,6 +69,11 @@ static float spawnEvery = 0.65f;
 static int score    = 0;
 static int timeLeft = 60;
 static int lastTick = 0;
+
+// ── NEW: lives and game over state ──
+static int  lives    = 3;
+static bool gameOver = false;
+static int  highScore = 0;
 
 float frand(float a, float b){
     return a + (b-a) * (rand() / (float)RAND_MAX);
@@ -200,31 +204,82 @@ void drawEgg(const Falling& o) {
     glPopMatrix();
 }
 
-Falling makeEgg(ObjType t) {
+// ── NEW: draw poop as stacked brown circles with smell lines ──
+void drawPoop(const Falling& o) {
+    glPushMatrix();
+    glTranslatef(o.x, o.y, 0);
+    glRotatef(o.rot, 0, 0, 1);
+
+    // Stacked brown circles forming poop pile
+    glColor3f(0.45f, 0.25f, 0.05f);
+    drawCircle(0.f,             0.f,            o.radius * 1.0f, 20);
+    drawCircle(0.f,  o.radius * 1.0f,           o.radius * 0.75f, 20);
+    drawCircle(0.f,  o.radius * 1.75f,          o.radius * 0.50f, 20);
+    drawCircle(0.f,  o.radius * 2.25f,          o.radius * 0.28f, 20);
+
+    // Shine on the base
+    glColor4f(1.f, 1.f, 1.f, 0.20f);
+    drawCircle(-o.radius * 0.3f, o.radius * 0.3f, o.radius * 0.25f, 12);
+
+    // Green smell lines above the poop
+    glColor4f(0.5f, 0.85f, 0.1f, 0.75f);
+    glLineWidth(2.f);
+    glBegin(GL_LINES);
+    // Left wavy line
+    glVertex2f(-o.radius * 0.5f, o.radius * 2.7f);
+    glVertex2f(-o.radius * 0.9f, o.radius * 3.4f);
+    // Right wavy line
+    glVertex2f( o.radius * 0.5f, o.radius * 2.7f);
+    glVertex2f( o.radius * 0.9f, o.radius * 3.4f);
+    // Center line
+    glVertex2f( 0.f,             o.radius * 2.8f);
+    glVertex2f( 0.f,             o.radius * 3.5f);
+    glEnd();
+
+    glPopMatrix();
+}
+
+// ── NEW: draw correct shape based on object type ──
+void drawObj(const Falling& o) {
+    if(o.type == ObjType::Poop) {
+        drawPoop(o);
+    } else {
+        drawEgg(o);
+    }
+}
+
+Falling makeObj(ObjType t) {
     Falling f;
     f.type   = t;
     f.x      = chicken.x + frand(-0.05f, 0.05f);
     f.y      = chicken.y - 0.06f;
     f.vy     = -frand(0.45f, 0.65f);
-    f.radius = (t == ObjType::GoldenEgg) ? 0.045f : 0.038f;
+    if(t == ObjType::GoldenEgg) {
+        f.radius = 0.045f;
+    } else if(t == ObjType::Poop) {
+        f.radius = 0.030f;
+    } else {
+        f.radius = 0.038f;
+    }
     f.rotSpd = frand(-120, 120);
     return f;
 }
 
-ObjType getRandomEggType() {
+// ── NEW: poop added at 10% chance ──
+ObjType getRandomObjType() {
     int r = rand() % 100;
     if(r < 5) {
-        return ObjType::GoldenEgg;
+        return ObjType::GoldenEgg;   //  5% chance
     } else if(r < 15) {
-        return ObjType::BlueEgg;
+        return ObjType::BlueEgg;     // 10% chance
+    } else if(r < 25) {
+        return ObjType::Poop;        // 10% chance
     } else {
-        return ObjType::NormalEgg;
+        return ObjType::NormalEgg;   // 75% chance
     }
 }
 
-// ── NEW: check if egg circle overlaps basket rectangle ──
-bool eggHitsBasket(const Basket& b, const Falling& f) {
-    // Find the closest point on the basket rectangle to the egg center
+bool objHitsBasket(const Basket& b, const Falling& f) {
     float cx = std::max(b.x - b.halfW, std::min(f.x, b.x + b.halfW));
     float cy = std::max(b.y - b.h,     std::min(f.y, b.y + b.h));
     float dx = f.x - cx;
@@ -232,12 +287,10 @@ bool eggHitsBasket(const Basket& b, const Falling& f) {
     return (dx*dx + dy*dy) <= (f.radius * f.radius);
 }
 
-// ── NEW: spawn coloured particles at a position ──
 void addParticles(float px, float py, int n, float r, float g, float b) {
     for(int i = 0; i < n; i++){
         Particle p;
-        p.x = px;
-        p.y = py;
+        p.x = px;  p.y = py;
         float ang = frand(0, 2 * 3.14159f);
         float sp  = frand(0.6f, 1.6f);
         p.vx      = cosf(ang) * sp;
@@ -250,20 +303,17 @@ void addParticles(float px, float py, int n, float r, float g, float b) {
     }
 }
 
-// ── NEW: spawn a score label that drifts upward ──
 void addFloatText(float px, float py,
                   const std::string& s,
                   float r, float g, float b) {
     FloatText ft;
-    ft.x    = px;
-    ft.y    = py;
-    ft.s    = s;
-    ft.r    = r;  ft.g = g;  ft.b = b;
+    ft.x = px;  ft.y = py;
+    ft.s = s;
+    ft.r = r;  ft.g = g;  ft.b = b;
     ft.life = 1.1f;
     floatTexts.push_back(ft);
 }
 
-// ── NEW: draw all active particles ──
 void drawParticles() {
     for(const auto& p : parts){
         glColor4f(p.r, p.g, p.b, p.a);
@@ -271,7 +321,6 @@ void drawParticles() {
     }
 }
 
-// ── NEW: draw all active float texts ──
 void drawFloatTexts() {
     for(const auto& ft : floatTexts){
         glColor3f(ft.r, ft.g, ft.b);
@@ -310,28 +359,78 @@ void drawGradientBG() {
     glEnd();
 }
 
+// ── NEW: draw heart shape for lives display ──
+void drawHeart(float cx, float cy, float sz) {
+    float r = sz * 0.32f;
+    drawCircle(cx - r * 0.72f, cy + sz * 0.05f, r, 20);
+    drawCircle(cx + r * 0.72f, cy + sz * 0.05f, r, 20);
+    glBegin(GL_TRIANGLES);
+    glVertex2f(cx - sz * 0.78f, cy + sz * 0.05f);
+    glVertex2f(cx + sz * 0.78f, cy + sz * 0.05f);
+    glVertex2f(cx,              cy - sz * 0.78f);
+    glEnd();
+}
+
 void drawHUD() {
     glColor3f(0, 0, 0);
     drawText(-0.95f, 0.92f, "Score: " + std::to_string(score));
     drawText(-0.22f, 0.92f, "Time:  " + std::to_string(timeLeft));
+
+    // ── NEW: draw heart icons for lives ──
+    for(int i = 0; i < 3; i++){
+        if(i < lives) {
+            glColor3f(0.90f, 0.15f, 0.20f);  // red = alive
+        } else {
+            glColor3f(0.38f, 0.38f, 0.38f);  // gray = lost
+        }
+        drawHeart(0.62f + i * 0.095f, 0.930f, 0.038f);
+    }
+}
+
+// ── NEW: game over screen ──
+void drawGameOver() {
+    drawGradientBG();
+
+    // Dark overlay
+    glColor4f(0, 0, 0, 0.70f);
+    drawRect(0, 0, 0.82f, 0.35f);
+
+    glColor3f(1, 1, 1);
+    drawText(-0.16f,  0.10f, "GAME OVER");
+
+    if(timeLeft <= 0) {
+        drawText(-0.18f,  0.02f, "Time is up!");
+    } else {
+        drawText(-0.22f,  0.02f, "You caught poop!");
+    }
+
+    drawText(-0.32f, -0.08f,
+             "Score: " + std::to_string(score) +
+             "   Best: " + std::to_string(highScore));
+    drawText(-0.44f, -0.18f, "Press R to restart  or  Esc to quit");
 }
 
 void display() {
     glClearColor(0.75f, 0.85f, 0.70f, 1);
     glClear(GL_COLOR_BUFFER_BIT);
     glLoadIdentity();
+
+    // ── NEW: show game over screen if game ended ──
+    if(gameOver){
+        drawGameOver();
+        glutSwapBuffers();
+        return;
+    }
+
     drawGradientBG();
     glColor3f(0.5f, 0.35f, 0.15f);
     drawRect(0, 0.65f, 0.92f, 0.018f);
     chicken.y = 0.70f;
     drawChicken();
-    for(const auto& o : objs) drawEgg(o);
+    for(const auto& o : objs) drawObj(o);
     drawBasket();
-
-    // ── NEW: draw particles and float texts on top ──
     drawParticles();
     drawFloatTexts();
-
     drawHUD();
     glutSwapBuffers();
 }
@@ -342,27 +441,58 @@ void reshape(int w, int h) {
     ortho();
 }
 
+// ── NEW: restart game state ──
+void restartGame() {
+    objs.clear();
+    parts.clear();
+    floatTexts.clear();
+    score      = 0;
+    timeLeft   = 60;
+    lives      = 3;
+    spawnTimer = 0.f;
+    spawnEvery = 0.65f;
+    basket     = Basket();
+    chicken    = Chicken();
+    gameOver   = false;
+    lastTick   = glutGet(GLUT_ELAPSED_TIME);
+}
+
 void special(int key, int, int) {
-    if(key == GLUT_KEY_LEFT)  basket.x -= 0.08f;
-    if(key == GLUT_KEY_RIGHT) basket.x += 0.08f;
-    basket.x = std::max(worldL + basket.halfW,
-                        std::min(worldR - basket.halfW, basket.x));
+    if(!gameOver){
+        if(key == GLUT_KEY_LEFT)  basket.x -= 0.08f;
+        if(key == GLUT_KEY_RIGHT) basket.x += 0.08f;
+        basket.x = std::max(worldL + basket.halfW,
+                            std::min(worldR - basket.halfW, basket.x));
+    }
 }
 
 void keyboard(unsigned char key, int, int) {
-    if(key == 'a' || key == 'A') basket.x -= 0.08f;
-    if(key == 'd' || key == 'D') basket.x += 0.08f;
-    basket.x = std::max(worldL + basket.halfW,
-                        std::min(worldR - basket.halfW, basket.x));
+    if(!gameOver){
+        if(key == 'a' || key == 'A') basket.x -= 0.08f;
+        if(key == 'd' || key == 'D') basket.x += 0.08f;
+        basket.x = std::max(worldL + basket.halfW,
+                            std::min(worldR - basket.halfW, basket.x));
+    }
+    // ── NEW: R to restart, Esc to quit ──
+    if(key == 'r' || key == 'R') {
+        restartGame();
+    }
+    if(key == 27) {
+        exit(0);
+    }
 }
 
 void passiveMotion(int mx, int) {
-    float wx = windowToWorldX(mx);
-    basket.x = std::max(worldL + basket.halfW,
-                        std::min(worldR - basket.halfW, wx));
+    if(!gameOver){
+        float wx = windowToWorldX(mx);
+        basket.x = std::max(worldL + basket.halfW,
+                            std::min(worldR - basket.halfW, wx));
+    }
 }
 
 void updateScene(float dt) {
+    if(gameOver) return;
+
     // Chicken movement
     chicken.x += chicken.vx * dt;
     if(chicken.x >  0.82f){ chicken.x =  0.82f; chicken.vx *= -1; }
@@ -380,22 +510,21 @@ void updateScene(float dt) {
         }
     }
 
-    // Spawn eggs
+    // Spawn objects
     spawnTimer += dt;
     if(spawnTimer >= spawnEvery){
-        objs.push_back(makeEgg(getRandomEggType()));
+        objs.push_back(makeObj(getRandomObjType()));
         spawnTimer = 0;
         spawnEvery = std::max(0.35f, spawnEvery - 0.002f);
     }
 
-    // Move eggs + check collision
+    // Move objects and check collision
     for(auto& o : objs){
         if(!o.active) continue;
-        o.y   += o.vy    * dt;
+        o.y   += o.vy     * dt;
         o.rot += o.rotSpd * dt;
 
-        // ── NEW: collision check ──
-        if(eggHitsBasket(basket, o)){
+        if(objHitsBasket(basket, o)){
             o.active = false;
 
             if(o.type == ObjType::NormalEgg){
@@ -410,6 +539,16 @@ void updateScene(float dt) {
                 score += 10;
                 addParticles(o.x, o.y, 20, 1.f, 0.84f, 0.f);
                 addFloatText(o.x, o.y, "+10", 0.95f, 0.7f, 0.f);
+            // ── NEW: catching poop loses a life and deducts 10 points ──
+            } else if(o.type == ObjType::Poop){
+                lives--;
+                score = std::max(0, score - 10);
+                addParticles(o.x, o.y, 15, 0.45f, 0.25f, 0.05f);
+                addFloatText(o.x, o.y, "-10", 0.6f, 0.3f, 0.f);
+                if(lives <= 0){
+                    gameOver  = true;
+                    highScore = std::max(highScore, score);
+                }
             }
         }
 
@@ -417,17 +556,15 @@ void updateScene(float dt) {
             o.active = false;
     }
 
-    // Remove inactive eggs
     objs.erase(
         std::remove_if(objs.begin(), objs.end(),
                        [](const Falling& f){ return !f.active; }),
         objs.end());
 
-    // ── NEW: update particles ──
     for(auto& p : parts){
         p.x    += p.vx * dt;
         p.y    += p.vy * dt;
-        p.vy   -= 1.6f * dt;   // gravity on particles
+        p.vy   -= 1.6f * dt;
         p.life -= dt;
         p.a     = std::max(0.f, p.life / p.maxLife);
     }
@@ -436,7 +573,6 @@ void updateScene(float dt) {
                        [](const Particle& p){ return p.life <= 0; }),
         parts.end());
 
-    // ── NEW: update float texts ──
     for(auto& ft : floatTexts){
         ft.y    += ft.vy * dt;
         ft.life -= dt;
@@ -452,7 +588,10 @@ void updateScene(float dt) {
     if(accumulator >= 1.0f){
         timeLeft--;
         accumulator = 0;
-        if(timeLeft < 0) timeLeft = 0;
+        if(timeLeft <= 0){
+            gameOver  = true;
+            highScore = std::max(highScore, score);
+        }
     }
 }
 
@@ -492,3 +631,5 @@ int main(int argc, char** argv) {
     glutMainLoop();
     return 0;
 }
+
+
