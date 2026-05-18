@@ -1,4 +1,4 @@
-// Step 9: Added menu screen with Start, Resume, Help and Exit buttons
+// Step 10: Added pause functionality and wind system
 #include <GL/glut.h>
 #include <algorithm>
 #include <cmath>
@@ -62,11 +62,10 @@ struct FloatText {
 };
 static std::vector<FloatText> floatTexts;
 
-// ── NEW: screen state enum ──
-enum class Screen { Menu, Help, Playing, GameOver };
+// ── NEW: Paused added to screen states ──
+enum class Screen { Menu, Help, Playing, Paused, GameOver };
 static Screen screenState = Screen::Menu;
 
-// ── NEW: simple button struct ──
 struct Button {
     float       x1, y1, x2, y2;
     std::string label;
@@ -83,11 +82,16 @@ static int  lastTick  = 0;
 static int  lives     = 3;
 static int  highScore = 0;
 
+// ── NEW: wind variables ──
+static float windForce       = 0.f;
+static float maxWindForce    = 0.5f;
+static float windChangeTimer = 0.f;
+static float windChangeEvery = 4.f;
+
 float frand(float a, float b){
     return a + (b-a) * (rand() / (float)RAND_MAX);
 }
 
-// ── NEW: convert mouse pixel position to world coords ──
 struct Vec2 { float x, y; };
 Vec2 windowToWorld(int mx, int my){
     float wx = worldL + (mx / (float)winW) * (worldR - worldL);
@@ -375,6 +379,54 @@ void drawHeart(float cx, float cy, float sz) {
     glEnd();
 }
 
+// ── NEW: wind indicator drawn in HUD ──
+void drawWindIndicator() {
+    float arrowY     = 0.920f;
+    float arrowCentX = 0.40f;
+    float strength   = std::abs(windForce) / maxWindForce;
+    float arrowLen   = strength * 0.18f;
+
+    // Label
+    glColor3f(0, 0, 0);
+    drawText(0.10f, arrowY, "Wind:");
+
+    if(arrowLen > 0.01f){
+        // Red for strong wind, black for light
+        if(strength > 0.5f) {
+            glColor3f(1.f, 0.f, 0.1f);
+        } else {
+            glColor3f(0.f, 0.f, 0.f);
+        }
+
+        glLineWidth(3.f * strength + 1.f);
+        int   dir      = (windForce > 0) ? 1 : -1;
+        float lineEnd  = arrowCentX + arrowLen * dir;
+
+        // Arrow line
+        glBegin(GL_LINES);
+        glVertex2f(arrowCentX, arrowY + 0.01f);
+        glVertex2f(lineEnd,    arrowY + 0.01f);
+        glEnd();
+
+        // Arrowhead triangle
+        glBegin(GL_TRIANGLES);
+        if(windForce > 0){
+            glVertex2f(lineEnd,        arrowY + 0.010f);
+            glVertex2f(lineEnd - 0.02f, arrowY + 0.025f);
+            glVertex2f(lineEnd - 0.02f, arrowY - 0.005f);
+        } else {
+            glVertex2f(lineEnd,        arrowY + 0.010f);
+            glVertex2f(lineEnd + 0.02f, arrowY + 0.025f);
+            glVertex2f(lineEnd + 0.02f, arrowY - 0.005f);
+        }
+        glEnd();
+        glLineWidth(1.f);
+    } else {
+        glColor3f(0.2f, 0.5f, 0.2f);
+        drawText(arrowCentX - 0.04f, arrowY, "Calm");
+    }
+}
+
 void drawHUD() {
     glColor3f(0, 0, 0);
     drawText(-0.95f, 0.92f, "Score: " + std::to_string(score));
@@ -387,6 +439,8 @@ void drawHUD() {
         }
         drawHeart(0.62f + i * 0.095f, 0.930f, 0.038f);
     }
+    // ── NEW: show wind indicator in HUD ──
+    drawWindIndicator();
 }
 
 void drawGameOver() {
@@ -406,12 +460,10 @@ void drawGameOver() {
     drawText(-0.44f, -0.18f, "Press R to restart  or  Esc for Menu");
 }
 
-// forward declare so setupMenuButtons can reference it
 void startGame();
 void helpScreen();
 void exitGame();
 
-// ── NEW: setup menu buttons with positions and actions ──
 void setupMenuButtons() {
     float bw = 0.36f, bh = 0.07f;
     float cx = 0.f, baseY = 0.15f;
@@ -423,7 +475,7 @@ void setupMenuButtons() {
     menuButtons.push_back({
         cx-bw, baseY-0.12f-bh, cx+bw, baseY-0.12f+bh,
         "Resume", [](){
-            if(screenState == Screen::Menu)
+            if(screenState == Screen::Paused)
                 screenState = Screen::Playing;
         }
     });
@@ -441,74 +493,51 @@ void startGame() {
     objs.clear();
     parts.clear();
     floatTexts.clear();
-    score      = 0;
-    timeLeft   = 60;
-    lives      = 3;
-    spawnTimer = 0.f;
-    spawnEvery = 0.65f;
-    basket     = Basket();
-    chicken    = Chicken();
-    lastTick   = glutGet(GLUT_ELAPSED_TIME);
-    screenState = Screen::Playing;
+    score          = 0;
+    timeLeft       = 60;
+    lives          = 3;
+    spawnTimer     = 0.f;
+    spawnEvery     = 0.65f;
+    windForce      = 0.f;
+    windChangeTimer = 0.f;
+    basket         = Basket();
+    chicken        = Chicken();
+    lastTick       = glutGet(GLUT_ELAPSED_TIME);
+    screenState    = Screen::Playing;
 }
 
-void helpScreen() {
-    screenState = Screen::Help;
-}
+void helpScreen() { screenState = Screen::Help; }
+void exitGame()   { exit(0); }
 
-void exitGame() {
-    exit(0);
-}
-
-// ── NEW: draw the main menu ──
 void drawMenu() {
     drawGradientBG();
-
-    // Title
     glColor3f(0.1f, 0.1f, 0.1f);
     drawText(-0.30f, 0.72f, "CATCH THE EGGS", GLUT_BITMAP_TIMES_ROMAN_24);
-
-    // Show chicken and basket on menu too
     chicken.y = 0.70f;
     drawChicken();
     drawBasket();
-
-    // Draw each button
     for(auto& b : menuButtons){
         float bx = (b.x1 + b.x2) / 2.f;
         float by = (b.y1 + b.y2) / 2.f;
         float bw = (b.x2 - b.x1) / 2.f;
         float bh = (b.y2 - b.y1) / 2.f;
-
-        // Shadow
         glColor4f(0, 0, 0, 0.2f);
         drawRect(bx, by - 0.008f, bw, bh);
-
-        // Button body
         glColor3f(0.3f, 0.7f, 0.3f);
         drawRect(bx, by, bw, bh);
-
-        // Button border
         glColor3f(0.2f, 0.55f, 0.2f);
         glLineWidth(2.f);
         glBegin(GL_LINE_LOOP);
-        glVertex2f(b.x1, b.y1);
-        glVertex2f(b.x2, b.y1);
-        glVertex2f(b.x2, b.y2);
-        glVertex2f(b.x1, b.y2);
+        glVertex2f(b.x1, b.y1); glVertex2f(b.x2, b.y1);
+        glVertex2f(b.x2, b.y2); glVertex2f(b.x1, b.y2);
         glEnd();
-
-        // Label
         glColor3f(0, 0, 0);
         drawText(bx - 0.06f, by - 0.01f, b.label);
     }
-
-    // High score at bottom
     glColor3f(0, 0, 0);
     drawText(-0.22f, -0.42f, "High Score: " + std::to_string(highScore));
 }
 
-// ── NEW: draw help screen ──
 void drawHelp() {
     drawGradientBG();
     glColor3f(0, 0, 0);
@@ -519,9 +548,21 @@ void drawHelp() {
     drawText(-0.95f, 0.28f, "- Golden Egg  =  +10 points  (gold)");
     drawText(-0.95f, 0.16f, "- Poop        =  -10 points and lose 1 life  (brown)");
     drawText(-0.95f, 0.04f, "- Lose all 3 lives or run out of time = Game Over");
-    drawText(-0.95f, -0.10f,"- Press R during game over to restart");
-    drawText(-0.95f, -0.22f,"- Press Esc to return to menu anytime");
-    drawText(-0.95f, -0.88f,"Click anywhere to return to Menu.");
+    drawText(-0.95f,-0.10f, "- Space = Pause / Resume the game");
+    drawText(-0.95f,-0.22f, "- Wind blows eggs left or right — watch the HUD arrow!");
+    drawText(-0.95f,-0.88f, "Click anywhere to return to Menu.");
+}
+
+// ── NEW: pause overlay drawn on top of the game ──
+void drawPauseOverlay() {
+    // Semi-transparent dark box
+    glColor4f(0.f, 0.f, 0.f, 0.60f);
+    drawRect(0, 0, 0.70f, 0.25f);
+
+    glColor3f(1, 1, 1);
+    drawText(-0.11f,  0.05f, "PAUSED", GLUT_BITMAP_TIMES_ROMAN_24);
+    drawText(-0.38f, -0.04f, "Space to Resume");
+    drawText(-0.38f, -0.13f, "Esc to return to Menu");
 }
 
 void display() {
@@ -535,8 +576,9 @@ void display() {
         drawHelp();
     } else if(screenState == Screen::GameOver){
         drawGameOver();
-    } else {
-        // Playing
+    } else if(screenState == Screen::Playing ||
+              screenState == Screen::Paused){
+        // Draw the full game scene
         drawGradientBG();
         glColor3f(0.5f, 0.35f, 0.15f);
         drawRect(0, 0.65f, 0.92f, 0.018f);
@@ -547,6 +589,11 @@ void display() {
         drawParticles();
         drawFloatTexts();
         drawHUD();
+
+        // ── NEW: draw pause overlay on top if paused ──
+        if(screenState == Screen::Paused){
+            drawPauseOverlay();
+        }
     }
 
     glutSwapBuffers();
@@ -558,11 +605,9 @@ void reshape(int w, int h) {
     ortho();
 }
 
-// ── NEW: mouse click handles menu button presses ──
 void mouseClick(int button, int state, int x, int y) {
     if(state != GLUT_DOWN) return;
     Vec2 wp = windowToWorld(x, y);
-
     if(screenState == Screen::Menu){
         for(auto& b : menuButtons){
             if(isOver(b, wp)){
@@ -592,15 +637,26 @@ void keyboard(unsigned char key, int, int) {
         if(key == 'd' || key == 'D') basket.x += 0.08f;
         basket.x = std::max(worldL + basket.halfW,
                             std::min(worldR - basket.halfW, basket.x));
-        if(key == 'r' || key == 'R') startGame();
     }
-    if(screenState == Screen::GameOver){
-        if(key == 'r' || key == 'R') startGame();
+
+    // ── NEW: Space toggles pause ──
+    if(key == ' '){
+        if(screenState == Screen::Playing){
+            screenState = Screen::Paused;
+        } else if(screenState == Screen::Paused){
+            lastTick    = glutGet(GLUT_ELAPSED_TIME); // reset dt to avoid jump
+            screenState = Screen::Playing;
+        }
     }
-    // Esc always goes back to menu or quits
+
+    if(key == 'r' || key == 'R'){
+        if(screenState == Screen::GameOver) startGame();
+    }
+
     if(key == 27){
         if(screenState == Screen::Playing ||
-           screenState == Screen::GameOver ||
+           screenState == Screen::Paused  ||
+           screenState == Screen::GameOver||
            screenState == Screen::Help){
             screenState = Screen::Menu;
         } else {
@@ -618,7 +674,7 @@ void passiveMotion(int mx, int) {
 }
 
 void updateScene(float dt) {
-    // Always animate clouds and chicken on menu too
+    // Chicken and clouds animate on menu too
     chicken.x += chicken.vx * dt;
     if(chicken.x >  0.82f){ chicken.x =  0.82f; chicken.vx *= -1; }
     if(chicken.x < -0.82f){ chicken.x = -0.82f; chicken.vx *= -1; }
@@ -634,9 +690,18 @@ void updateScene(float dt) {
         }
     }
 
-    // Only run game logic while playing
+    // Stop all game logic when not playing
     if(screenState != Screen::Playing) return;
 
+    // ── NEW: update wind every few seconds ──
+    windChangeTimer += dt;
+    if(windChangeTimer >= windChangeEvery){
+        windForce       = frand(-maxWindForce, maxWindForce);
+        windChangeEvery = frand(3.f, 6.f);
+        windChangeTimer = 0.f;
+    }
+
+    // Spawn
     spawnTimer += dt;
     if(spawnTimer >= spawnEvery){
         objs.push_back(makeObj(getRandomObjType()));
@@ -644,10 +709,14 @@ void updateScene(float dt) {
         spawnEvery = std::max(0.35f, spawnEvery - 0.002f);
     }
 
+    // Move objects
     for(auto& o : objs){
         if(!o.active) continue;
-        o.y   += o.vy     * dt;
-        o.rot += o.rotSpd * dt;
+
+        // ── NEW: wind pushes objects horizontally ──
+        o.x   += windForce * 0.8f * dt;
+        o.y   += o.vy      * dt;
+        o.rot += o.rotSpd  * dt;
 
         if(objHitsBasket(basket, o)){
             o.active = false;
@@ -735,10 +804,7 @@ int main(int argc, char** argv) {
             frand(0.02f, 0.08f)
         });
     }
-
-    // ── NEW: build menu buttons once at startup ──
     setupMenuButtons();
-
     glutDisplayFunc(display);
     glutReshapeFunc(reshape);
     glutSpecialFunc(special);
@@ -750,3 +816,5 @@ int main(int argc, char** argv) {
     glutMainLoop();
     return 0;
 }
+
+
