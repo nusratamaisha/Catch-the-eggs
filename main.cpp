@@ -1,4 +1,4 @@
-// Step 5: Added game timer, chicken animation and cloud movement
+// Step 7: Added collision detection, scoring, particles and float texts
 #include <GL/glut.h>
 #include <algorithm>
 #include <cmath>
@@ -30,6 +30,42 @@ struct Basket {
     float h     = 0.09f;
 };
 static Basket basket;
+
+enum class ObjType { NormalEgg, BlueEgg, GoldenEgg };
+
+struct Falling {
+    ObjType type;
+    float   x, y;
+    float   vy;
+    float   radius;
+    float   rot    = 0.f;
+    float   rotSpd = 0.f;
+    bool    active = true;
+};
+static std::vector<Falling> objs;
+
+// ── NEW: particle struct for burst effect on catch ──
+struct Particle {
+    float x, y;
+    float vx, vy;
+    float life, maxLife;
+    float size;
+    float r, g, b, a;
+};
+static std::vector<Particle> parts;
+
+// ── NEW: floating score text struct ──
+struct FloatText {
+    float       x, y;
+    std::string s;
+    float       life = 1.f;
+    float       vy   = 0.35f;
+    float       r = 0, g = 0, b = 0;
+};
+static std::vector<FloatText> floatTexts;
+
+static float spawnTimer = 0.f;
+static float spawnEvery = 0.65f;
 
 static int score    = 0;
 static int timeLeft = 60;
@@ -135,6 +171,114 @@ void drawBasket() {
     glPopMatrix();
 }
 
+void drawEgg(const Falling& o) {
+    glPushMatrix();
+    glTranslatef(o.x, o.y, 0);
+    glRotatef(o.rot, 0, 0, 1);
+    if(o.type == ObjType::GoldenEgg) {
+        glColor3f(1.f, 0.84f, 0.f);
+    } else if(o.type == ObjType::BlueEgg) {
+        glColor3f(0.45f, 0.65f, 1.f);
+    } else {
+        glColor3f(1.f, 1.f, 0.94f);
+    }
+    drawCircle(0, 0, o.radius, 40);
+    glColor4f(1, 1, 1, 0.45f);
+    drawCircle(-o.radius * 0.35f, o.radius * 0.25f, o.radius * 0.35f, 28);
+    if(o.type == ObjType::GoldenEgg){
+        glColor4f(1.f, 0.9f, 0.2f, 0.25f);
+        glBegin(GL_TRIANGLE_STRIP);
+        float innerR = o.radius * 1.20f;
+        float outerR = o.radius * 1.35f;
+        for(int i = 0; i <= 56; i++){
+            float th = 2.f * 3.14159f * i / 56;
+            glVertex2f(cosf(th) * innerR, sinf(th) * innerR);
+            glVertex2f(cosf(th) * outerR, sinf(th) * outerR);
+        }
+        glEnd();
+    }
+    glPopMatrix();
+}
+
+Falling makeEgg(ObjType t) {
+    Falling f;
+    f.type   = t;
+    f.x      = chicken.x + frand(-0.05f, 0.05f);
+    f.y      = chicken.y - 0.06f;
+    f.vy     = -frand(0.45f, 0.65f);
+    f.radius = (t == ObjType::GoldenEgg) ? 0.045f : 0.038f;
+    f.rotSpd = frand(-120, 120);
+    return f;
+}
+
+ObjType getRandomEggType() {
+    int r = rand() % 100;
+    if(r < 5) {
+        return ObjType::GoldenEgg;
+    } else if(r < 15) {
+        return ObjType::BlueEgg;
+    } else {
+        return ObjType::NormalEgg;
+    }
+}
+
+// ── NEW: check if egg circle overlaps basket rectangle ──
+bool eggHitsBasket(const Basket& b, const Falling& f) {
+    // Find the closest point on the basket rectangle to the egg center
+    float cx = std::max(b.x - b.halfW, std::min(f.x, b.x + b.halfW));
+    float cy = std::max(b.y - b.h,     std::min(f.y, b.y + b.h));
+    float dx = f.x - cx;
+    float dy = f.y - cy;
+    return (dx*dx + dy*dy) <= (f.radius * f.radius);
+}
+
+// ── NEW: spawn coloured particles at a position ──
+void addParticles(float px, float py, int n, float r, float g, float b) {
+    for(int i = 0; i < n; i++){
+        Particle p;
+        p.x = px;
+        p.y = py;
+        float ang = frand(0, 2 * 3.14159f);
+        float sp  = frand(0.6f, 1.6f);
+        p.vx      = cosf(ang) * sp;
+        p.vy      = sinf(ang) * sp;
+        p.life    = frand(0.35f, 0.75f);
+        p.maxLife = p.life;
+        p.size    = frand(0.008f, 0.02f);
+        p.r = r;  p.g = g;  p.b = b;  p.a = 1.f;
+        parts.push_back(p);
+    }
+}
+
+// ── NEW: spawn a score label that drifts upward ──
+void addFloatText(float px, float py,
+                  const std::string& s,
+                  float r, float g, float b) {
+    FloatText ft;
+    ft.x    = px;
+    ft.y    = py;
+    ft.s    = s;
+    ft.r    = r;  ft.g = g;  ft.b = b;
+    ft.life = 1.1f;
+    floatTexts.push_back(ft);
+}
+
+// ── NEW: draw all active particles ──
+void drawParticles() {
+    for(const auto& p : parts){
+        glColor4f(p.r, p.g, p.b, p.a);
+        drawCircle(p.x, p.y, p.size, 10);
+    }
+}
+
+// ── NEW: draw all active float texts ──
+void drawFloatTexts() {
+    for(const auto& ft : floatTexts){
+        glColor3f(ft.r, ft.g, ft.b);
+        drawText(ft.x - 0.02f, ft.y, ft.s);
+    }
+}
+
 void drawGradientBG() {
     glBegin(GL_QUADS);
     glColor3f(0.5f, 0.7f, 0.9f);   glVertex2f(worldL, 0.15f);
@@ -181,7 +325,13 @@ void display() {
     drawRect(0, 0.65f, 0.92f, 0.018f);
     chicken.y = 0.70f;
     drawChicken();
+    for(const auto& o : objs) drawEgg(o);
     drawBasket();
+
+    // ── NEW: draw particles and float texts on top ──
+    drawParticles();
+    drawFloatTexts();
+
     drawHUD();
     glutSwapBuffers();
 }
@@ -213,10 +363,13 @@ void passiveMotion(int mx, int) {
 }
 
 void updateScene(float dt) {
+    // Chicken movement
     chicken.x += chicken.vx * dt;
     if(chicken.x >  0.82f){ chicken.x =  0.82f; chicken.vx *= -1; }
     if(chicken.x < -0.82f){ chicken.x = -0.82f; chicken.vx *= -1; }
     chicken.bob = 0.01f * sinf(glutGet(GLUT_ELAPSED_TIME) * 0.008f);
+
+    // Cloud movement
     for(auto& c : clouds){
         c.x += c.speed * dt;
         if(c.x > worldR + c.scale * 0.15f){
@@ -226,6 +379,74 @@ void updateScene(float dt) {
             c.speed = frand(0.02f, 0.08f);
         }
     }
+
+    // Spawn eggs
+    spawnTimer += dt;
+    if(spawnTimer >= spawnEvery){
+        objs.push_back(makeEgg(getRandomEggType()));
+        spawnTimer = 0;
+        spawnEvery = std::max(0.35f, spawnEvery - 0.002f);
+    }
+
+    // Move eggs + check collision
+    for(auto& o : objs){
+        if(!o.active) continue;
+        o.y   += o.vy    * dt;
+        o.rot += o.rotSpd * dt;
+
+        // ── NEW: collision check ──
+        if(eggHitsBasket(basket, o)){
+            o.active = false;
+
+            if(o.type == ObjType::NormalEgg){
+                score += 1;
+                addParticles(o.x, o.y, 12, 1.f, 1.f, 0.9f);
+                addFloatText(o.x, o.y, "+1", 0.f, 0.6f, 0.f);
+            } else if(o.type == ObjType::BlueEgg){
+                score += 5;
+                addParticles(o.x, o.y, 16, 0.4f, 0.6f, 1.f);
+                addFloatText(o.x, o.y, "+5", 0.1f, 0.45f, 1.f);
+            } else if(o.type == ObjType::GoldenEgg){
+                score += 10;
+                addParticles(o.x, o.y, 20, 1.f, 0.84f, 0.f);
+                addFloatText(o.x, o.y, "+10", 0.95f, 0.7f, 0.f);
+            }
+        }
+
+        if(o.y < worldB - 0.25f)
+            o.active = false;
+    }
+
+    // Remove inactive eggs
+    objs.erase(
+        std::remove_if(objs.begin(), objs.end(),
+                       [](const Falling& f){ return !f.active; }),
+        objs.end());
+
+    // ── NEW: update particles ──
+    for(auto& p : parts){
+        p.x    += p.vx * dt;
+        p.y    += p.vy * dt;
+        p.vy   -= 1.6f * dt;   // gravity on particles
+        p.life -= dt;
+        p.a     = std::max(0.f, p.life / p.maxLife);
+    }
+    parts.erase(
+        std::remove_if(parts.begin(), parts.end(),
+                       [](const Particle& p){ return p.life <= 0; }),
+        parts.end());
+
+    // ── NEW: update float texts ──
+    for(auto& ft : floatTexts){
+        ft.y    += ft.vy * dt;
+        ft.life -= dt;
+    }
+    floatTexts.erase(
+        std::remove_if(floatTexts.begin(), floatTexts.end(),
+                       [](const FloatText& t){ return t.life <= 0; }),
+        floatTexts.end());
+
+    // Timer countdown
     static float accumulator = 0;
     accumulator += dt;
     if(accumulator >= 1.0f){
