@@ -1,4 +1,4 @@
-// Step 5: Added game timer, chicken animation and cloud movement
+// Step 6: Added falling eggs system with three egg types
 #include <GL/glut.h>
 #include <algorithm>
 #include <cmath>
@@ -30,6 +30,25 @@ struct Basket {
     float h     = 0.09f;
 };
 static Basket basket;
+
+// ── NEW: egg types ──
+enum class ObjType { NormalEgg, BlueEgg, GoldenEgg };
+
+// ── NEW: falling object struct ──
+struct Falling {
+    ObjType type;
+    float   x, y;
+    float   vy;
+    float   radius;
+    float   rot    = 0.f;
+    float   rotSpd = 0.f;
+    bool    active = true;
+};
+static std::vector<Falling> objs;
+
+// ── NEW: spawn timer ──
+static float spawnTimer = 0.f;
+static float spawnEvery = 0.65f;
 
 static int score    = 0;
 static int timeLeft = 60;
@@ -135,6 +154,64 @@ void drawBasket() {
     glPopMatrix();
 }
 
+// ── NEW: draw a single egg based on its type ──
+void drawEgg(const Falling& o) {
+    glPushMatrix();
+    glTranslatef(o.x, o.y, 0);
+    glRotatef(o.rot, 0, 0, 1);
+
+    // Pick colour based on egg type
+    if(o.type == ObjType::GoldenEgg)
+        glColor3f(1.f, 0.84f, 0.f);
+    else if(o.type == ObjType::BlueEgg)
+        glColor3f(0.45f, 0.65f, 1.f);
+    else
+        glColor3f(1.f, 1.f, 0.94f);  // Normal egg: off-white
+
+    drawCircle(0, 0, o.radius, 40);
+
+    // Shine highlight on all eggs
+    glColor4f(1, 1, 1, 0.45f);
+    drawCircle(-o.radius * 0.35f, o.radius * 0.25f, o.radius * 0.35f, 28);
+
+    // Golden egg gets an extra glow ring
+    if(o.type == ObjType::GoldenEgg){
+        glColor4f(1.f, 0.9f, 0.2f, 0.25f);
+        // Draw ring manually
+        glBegin(GL_TRIANGLE_STRIP);
+        float innerR = o.radius * 1.20f;
+        float outerR = o.radius * 1.35f;
+        for(int i = 0; i <= 56; i++){
+            float th = 2.f * 3.14159f * i / 56;
+            glVertex2f(cosf(th) * innerR, sinf(th) * innerR);
+            glVertex2f(cosf(th) * outerR, sinf(th) * outerR);
+        }
+        glEnd();
+    }
+
+    glPopMatrix();
+}
+
+// ── NEW: create a new falling egg at chicken position ──
+Falling makeEgg(ObjType t) {
+    Falling f;
+    f.type   = t;
+    f.x      = chicken.x + frand(-0.05f, 0.05f);
+    f.y      = chicken.y - 0.06f;
+    f.vy     = -frand(0.45f, 0.65f);
+    f.radius = (t == ObjType::GoldenEgg) ? 0.045f : 0.038f;
+    f.rotSpd = frand(-120, 120);
+    return f;
+}
+
+// ── NEW: pick a random egg type with weighted probability ──
+ObjType getRandomEggType() {
+    int r = rand() % 100;
+    if(r < 5)  return ObjType::GoldenEgg;  //  5% chance
+    if(r < 15) return ObjType::BlueEgg;    // 10% chance
+    return ObjType::NormalEgg;             // 85% chance
+}
+
 void drawGradientBG() {
     glBegin(GL_QUADS);
     glColor3f(0.5f, 0.7f, 0.9f);   glVertex2f(worldL, 0.15f);
@@ -181,6 +258,11 @@ void display() {
     drawRect(0, 0.65f, 0.92f, 0.018f);
     chicken.y = 0.70f;
     drawChicken();
+
+    // ── NEW: draw all active falling eggs ──
+    for(const auto& o : objs)
+        drawEgg(o);
+
     drawBasket();
     drawHUD();
     glutSwapBuffers();
@@ -213,10 +295,13 @@ void passiveMotion(int mx, int) {
 }
 
 void updateScene(float dt) {
+    // Chicken movement
     chicken.x += chicken.vx * dt;
     if(chicken.x >  0.82f){ chicken.x =  0.82f; chicken.vx *= -1; }
     if(chicken.x < -0.82f){ chicken.x = -0.82f; chicken.vx *= -1; }
     chicken.bob = 0.01f * sinf(glutGet(GLUT_ELAPSED_TIME) * 0.008f);
+
+    // Cloud movement
     for(auto& c : clouds){
         c.x += c.speed * dt;
         if(c.x > worldR + c.scale * 0.15f){
@@ -226,6 +311,34 @@ void updateScene(float dt) {
             c.speed = frand(0.02f, 0.08f);
         }
     }
+
+    // ── NEW: spawn a new egg every spawnEvery seconds ──
+    spawnTimer += dt;
+    if(spawnTimer >= spawnEvery){
+        objs.push_back(makeEgg(getRandomEggType()));
+        spawnTimer = 0;
+        // Gradually speed up spawning over time
+        spawnEvery = std::max(0.35f, spawnEvery - 0.002f);
+    }
+
+    // ── NEW: move each egg downward and rotate it ──
+    for(auto& o : objs){
+        if(!o.active) continue;
+        o.y   += o.vy  * dt;
+        o.rot += o.rotSpd * dt;
+
+        // Deactivate eggs that fall off the bottom
+        if(o.y < worldB - 0.25f)
+            o.active = false;
+    }
+
+    // ── NEW: remove inactive eggs from the list ──
+    objs.erase(
+        std::remove_if(objs.begin(), objs.end(),
+                       [](const Falling& f){ return !f.active; }),
+        objs.end());
+
+    // Timer countdown
     static float accumulator = 0;
     accumulator += dt;
     if(accumulator >= 1.0f){
@@ -271,3 +384,5 @@ int main(int argc, char** argv) {
     glutMainLoop();
     return 0;
 }
+
+
