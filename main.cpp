@@ -1,4 +1,4 @@
-// Step 9: Added menu screen with Start, Resume, Help and Exit buttons
+// Step 11: Added 3-2-1-GO countdown screen before game starts
 #include <GL/glut.h>
 #include <algorithm>
 #include <cmath>
@@ -62,11 +62,10 @@ struct FloatText {
 };
 static std::vector<FloatText> floatTexts;
 
-// ── NEW: screen state enum ──
-enum class Screen { Menu, Help, Playing, GameOver };
+// ── NEW: Countdown added to screen states ──
+enum class Screen { Menu, Help, Playing, Paused, GameOver, Countdown };
 static Screen screenState = Screen::Menu;
 
-// ── NEW: simple button struct ──
 struct Button {
     float       x1, y1, x2, y2;
     std::string label;
@@ -83,11 +82,20 @@ static int  lastTick  = 0;
 static int  lives     = 3;
 static int  highScore = 0;
 
+static float windForce       = 0.f;
+static float maxWindForce    = 0.5f;
+static float windChangeTimer = 0.f;
+static float windChangeEvery = 4.f;
+
+// ── NEW: countdown state variables ──
+static int   countdownVal   = 3;
+static float countdownTimer = 0.f;
+static const float COUNTDOWN_STEP = 1.0f;
+
 float frand(float a, float b){
     return a + (b-a) * (rand() / (float)RAND_MAX);
 }
 
-// ── NEW: convert mouse pixel position to world coords ──
 struct Vec2 { float x, y; };
 Vec2 windowToWorld(int mx, int my){
     float wx = worldL + (mx / (float)winW) * (worldR - worldL);
@@ -138,6 +146,23 @@ void drawText(float x, float y, const std::string& s,
               void* font = GLUT_BITMAP_HELVETICA_18) {
     glRasterPos2f(x, y);
     for(char c : s) glutBitmapCharacter(font, c);
+}
+
+// ── NEW: scalable stroke text for big countdown numbers ──
+void drawStrokeText(float x, float y, const std::string& s, float scale) {
+    glPushMatrix();
+    glTranslatef(x, y, 0.f);
+    glScalef(scale, scale, 1.f);
+    for(char c : s) glutStrokeCharacter(GLUT_STROKE_ROMAN, c);
+    glPopMatrix();
+}
+
+// ── NEW: measure stroke text width for centering ──
+float strokeTextWidth(const std::string& s, float scale) {
+    float w = 0;
+    for(char c : s)
+        w += float(glutStrokeWidth(GLUT_STROKE_ROMAN, c));
+    return w * scale;
 }
 
 void drawCloud(const Cloud& c) {
@@ -375,6 +400,44 @@ void drawHeart(float cx, float cy, float sz) {
     glEnd();
 }
 
+void drawWindIndicator() {
+    float arrowY     = 0.920f;
+    float arrowCentX = 0.40f;
+    float strength   = std::abs(windForce) / maxWindForce;
+    float arrowLen   = strength * 0.18f;
+    glColor3f(0, 0, 0);
+    drawText(0.10f, arrowY, "Wind:");
+    if(arrowLen > 0.01f){
+        if(strength > 0.5f) {
+            glColor3f(1.f, 0.f, 0.1f);
+        } else {
+            glColor3f(0.f, 0.f, 0.f);
+        }
+        glLineWidth(3.f * strength + 1.f);
+        int   dir     = (windForce > 0) ? 1 : -1;
+        float lineEnd = arrowCentX + arrowLen * dir;
+        glBegin(GL_LINES);
+        glVertex2f(arrowCentX, arrowY + 0.01f);
+        glVertex2f(lineEnd,    arrowY + 0.01f);
+        glEnd();
+        glBegin(GL_TRIANGLES);
+        if(windForce > 0){
+            glVertex2f(lineEnd,         arrowY + 0.010f);
+            glVertex2f(lineEnd - 0.02f, arrowY + 0.025f);
+            glVertex2f(lineEnd - 0.02f, arrowY - 0.005f);
+        } else {
+            glVertex2f(lineEnd,         arrowY + 0.010f);
+            glVertex2f(lineEnd + 0.02f, arrowY + 0.025f);
+            glVertex2f(lineEnd + 0.02f, arrowY - 0.005f);
+        }
+        glEnd();
+        glLineWidth(1.f);
+    } else {
+        glColor3f(0.2f, 0.5f, 0.2f);
+        drawText(arrowCentX - 0.04f, arrowY, "Calm");
+    }
+}
+
 void drawHUD() {
     glColor3f(0, 0, 0);
     drawText(-0.95f, 0.92f, "Score: " + std::to_string(score));
@@ -387,6 +450,7 @@ void drawHUD() {
         }
         drawHeart(0.62f + i * 0.095f, 0.930f, 0.038f);
     }
+    drawWindIndicator();
 }
 
 void drawGameOver() {
@@ -406,12 +470,10 @@ void drawGameOver() {
     drawText(-0.44f, -0.18f, "Press R to restart  or  Esc for Menu");
 }
 
-// forward declare so setupMenuButtons can reference it
 void startGame();
 void helpScreen();
 void exitGame();
 
-// ── NEW: setup menu buttons with positions and actions ──
 void setupMenuButtons() {
     float bw = 0.36f, bh = 0.07f;
     float cx = 0.f, baseY = 0.15f;
@@ -423,7 +485,7 @@ void setupMenuButtons() {
     menuButtons.push_back({
         cx-bw, baseY-0.12f-bh, cx+bw, baseY-0.12f+bh,
         "Resume", [](){
-            if(screenState == Screen::Menu)
+            if(screenState == Screen::Paused)
                 screenState = Screen::Playing;
         }
     });
@@ -441,74 +503,110 @@ void startGame() {
     objs.clear();
     parts.clear();
     floatTexts.clear();
-    score      = 0;
-    timeLeft   = 60;
-    lives      = 3;
-    spawnTimer = 0.f;
-    spawnEvery = 0.65f;
-    basket     = Basket();
-    chicken    = Chicken();
-    lastTick   = glutGet(GLUT_ELAPSED_TIME);
-    screenState = Screen::Playing;
+    score           = 0;
+    timeLeft        = 60;
+    lives           = 3;
+    spawnTimer      = 0.f;
+    spawnEvery      = 0.65f;
+    windForce       = 0.f;
+    windChangeTimer = 0.f;
+    basket          = Basket();
+    chicken         = Chicken();
+    // ── NEW: go to countdown instead of Playing directly ──
+    countdownVal    = 3;
+    countdownTimer  = 0.f;
+    lastTick        = glutGet(GLUT_ELAPSED_TIME);
+    screenState     = Screen::Countdown;
 }
 
-void helpScreen() {
-    screenState = Screen::Help;
-}
+void helpScreen() { screenState = Screen::Help; }
+void exitGame()   { exit(0); }
 
-void exitGame() {
-    exit(0);
-}
-
-// ── NEW: draw the main menu ──
-void drawMenu() {
+// ── NEW: draw the countdown screen ──
+void drawCountdown() {
+    // Draw the full scene behind the overlay
     drawGradientBG();
-
-    // Title
-    glColor3f(0.1f, 0.1f, 0.1f);
-    drawText(-0.30f, 0.72f, "CATCH THE EGGS", GLUT_BITMAP_TIMES_ROMAN_24);
-
-    // Show chicken and basket on menu too
+    glColor3f(0.5f, 0.35f, 0.15f);
+    drawRect(0, 0.65f, 0.92f, 0.018f);
     chicken.y = 0.70f;
     drawChicken();
     drawBasket();
 
-    // Draw each button
+    // Semi-transparent dark overlay
+    glColor4f(0.f, 0.f, 0.f, 0.50f);
+    drawRect(0, 0, 1.f, 1.f);
+
+    // Pick label: "3", "2", "1" or "GO!"
+    std::string label;
+    if(countdownVal > 0) {
+        label = std::to_string(countdownVal);
+    } else {
+        label = "GO!";
+    }
+
+    // Pulse: starts big, shrinks to normal size over each step
+    float prog  = countdownTimer / COUNTDOWN_STEP;   // 0 to 1
+    float pulse = 1.f + 0.40f * (1.f - prog);        // 1.4 down to 1.0
+    float sc    = 0.0030f * pulse;
+
+    // Center the text horizontally
+    float tw = strokeTextWidth(label, sc);
+    float tx = -tw / 2.f;
+    float ty = -0.07f;
+
+    // Drop shadow
+    glColor3f(0.f, 0.f, 0.f);
+    glLineWidth(6.f);
+    drawStrokeText(tx + 0.009f, ty - 0.009f, label, sc);
+
+    // Main coloured text
+    if(countdownVal > 0) {
+        glColor3f(1.f, 0.92f, 0.20f);   // yellow for numbers
+    } else {
+        glColor3f(0.25f, 1.f,  0.40f);  // green for GO!
+    }
+    glLineWidth(3.5f);
+    drawStrokeText(tx, ty, label, sc);
+    glLineWidth(1.f);
+
+    // Subtitle hints
+    if(countdownVal > 0) {
+        glColor4f(1.f, 1.f, 1.f, 0.85f);
+        drawText(-0.20f,  0.14f, "GET READY!");
+        glColor4f(0.8f, 0.8f, 0.8f, 0.70f);
+        drawText(-0.30f, -0.24f, "Press Space to skip");
+    }
+}
+
+void drawMenu() {
+    drawGradientBG();
+    glColor3f(0.1f, 0.1f, 0.1f);
+    drawText(-0.30f, 0.72f, "CATCH THE EGGS", GLUT_BITMAP_TIMES_ROMAN_24);
+    chicken.y = 0.70f;
+    drawChicken();
+    drawBasket();
     for(auto& b : menuButtons){
         float bx = (b.x1 + b.x2) / 2.f;
         float by = (b.y1 + b.y2) / 2.f;
         float bw = (b.x2 - b.x1) / 2.f;
         float bh = (b.y2 - b.y1) / 2.f;
-
-        // Shadow
         glColor4f(0, 0, 0, 0.2f);
         drawRect(bx, by - 0.008f, bw, bh);
-
-        // Button body
         glColor3f(0.3f, 0.7f, 0.3f);
         drawRect(bx, by, bw, bh);
-
-        // Button border
         glColor3f(0.2f, 0.55f, 0.2f);
         glLineWidth(2.f);
         glBegin(GL_LINE_LOOP);
-        glVertex2f(b.x1, b.y1);
-        glVertex2f(b.x2, b.y1);
-        glVertex2f(b.x2, b.y2);
-        glVertex2f(b.x1, b.y2);
+        glVertex2f(b.x1, b.y1); glVertex2f(b.x2, b.y1);
+        glVertex2f(b.x2, b.y2); glVertex2f(b.x1, b.y2);
         glEnd();
-
-        // Label
         glColor3f(0, 0, 0);
         drawText(bx - 0.06f, by - 0.01f, b.label);
     }
-
-    // High score at bottom
     glColor3f(0, 0, 0);
     drawText(-0.22f, -0.42f, "High Score: " + std::to_string(highScore));
 }
 
-// ── NEW: draw help screen ──
 void drawHelp() {
     drawGradientBG();
     glColor3f(0, 0, 0);
@@ -519,9 +617,18 @@ void drawHelp() {
     drawText(-0.95f, 0.28f, "- Golden Egg  =  +10 points  (gold)");
     drawText(-0.95f, 0.16f, "- Poop        =  -10 points and lose 1 life  (brown)");
     drawText(-0.95f, 0.04f, "- Lose all 3 lives or run out of time = Game Over");
-    drawText(-0.95f, -0.10f,"- Press R during game over to restart");
-    drawText(-0.95f, -0.22f,"- Press Esc to return to menu anytime");
-    drawText(-0.95f, -0.88f,"Click anywhere to return to Menu.");
+    drawText(-0.95f,-0.10f, "- Space = Pause / Resume the game");
+    drawText(-0.95f,-0.22f, "- Wind blows eggs left or right -- watch the HUD arrow!");
+    drawText(-0.95f,-0.88f, "Click anywhere to return to Menu.");
+}
+
+void drawPauseOverlay() {
+    glColor4f(0.f, 0.f, 0.f, 0.60f);
+    drawRect(0, 0, 0.70f, 0.25f);
+    glColor3f(1, 1, 1);
+    drawText(-0.11f,  0.05f, "PAUSED", GLUT_BITMAP_TIMES_ROMAN_24);
+    drawText(-0.38f, -0.04f, "Space to Resume");
+    drawText(-0.38f, -0.13f, "Esc to return to Menu");
 }
 
 void display() {
@@ -535,8 +642,11 @@ void display() {
         drawHelp();
     } else if(screenState == Screen::GameOver){
         drawGameOver();
-    } else {
-        // Playing
+    // ── NEW: countdown screen ──
+    } else if(screenState == Screen::Countdown){
+        drawCountdown();
+    } else if(screenState == Screen::Playing ||
+              screenState == Screen::Paused){
         drawGradientBG();
         glColor3f(0.5f, 0.35f, 0.15f);
         drawRect(0, 0.65f, 0.92f, 0.018f);
@@ -547,6 +657,9 @@ void display() {
         drawParticles();
         drawFloatTexts();
         drawHUD();
+        if(screenState == Screen::Paused){
+            drawPauseOverlay();
+        }
     }
 
     glutSwapBuffers();
@@ -558,11 +671,9 @@ void reshape(int w, int h) {
     ortho();
 }
 
-// ── NEW: mouse click handles menu button presses ──
 void mouseClick(int button, int state, int x, int y) {
     if(state != GLUT_DOWN) return;
     Vec2 wp = windowToWorld(x, y);
-
     if(screenState == Screen::Menu){
         for(auto& b : menuButtons){
             if(isOver(b, wp)){
@@ -578,7 +689,8 @@ void mouseClick(int button, int state, int x, int y) {
 }
 
 void special(int key, int, int) {
-    if(screenState == Screen::Playing){
+    if(screenState == Screen::Playing ||
+       screenState == Screen::Countdown){
         if(key == GLUT_KEY_LEFT)  basket.x -= 0.08f;
         if(key == GLUT_KEY_RIGHT) basket.x += 0.08f;
         basket.x = std::max(worldL + basket.halfW,
@@ -587,19 +699,35 @@ void special(int key, int, int) {
 }
 
 void keyboard(unsigned char key, int, int) {
-    if(screenState == Screen::Playing){
+    if(screenState == Screen::Playing ||
+       screenState == Screen::Countdown){
         if(key == 'a' || key == 'A') basket.x -= 0.08f;
         if(key == 'd' || key == 'D') basket.x += 0.08f;
         basket.x = std::max(worldL + basket.halfW,
                             std::min(worldR - basket.halfW, basket.x));
-        if(key == 'r' || key == 'R') startGame();
     }
-    if(screenState == Screen::GameOver){
-        if(key == 'r' || key == 'R') startGame();
+
+    if(key == ' '){
+        if(screenState == Screen::Playing){
+            screenState = Screen::Paused;
+        } else if(screenState == Screen::Paused){
+            lastTick    = glutGet(GLUT_ELAPSED_TIME);
+            screenState = Screen::Playing;
+        // ── NEW: Space skips the countdown ──
+        } else if(screenState == Screen::Countdown){
+            lastTick    = glutGet(GLUT_ELAPSED_TIME);
+            screenState = Screen::Playing;
+        }
     }
-    // Esc always goes back to menu or quits
+
+    if(key == 'r' || key == 'R'){
+        if(screenState == Screen::GameOver) startGame();
+    }
+
     if(key == 27){
-        if(screenState == Screen::Playing ||
+        if(screenState == Screen::Playing  ||
+           screenState == Screen::Paused   ||
+           screenState == Screen::Countdown||
            screenState == Screen::GameOver ||
            screenState == Screen::Help){
             screenState = Screen::Menu;
@@ -610,15 +738,41 @@ void keyboard(unsigned char key, int, int) {
 }
 
 void passiveMotion(int mx, int) {
-    if(screenState == Screen::Playing){
+    if(screenState == Screen::Playing ||
+       screenState == Screen::Countdown){
         float wx = windowToWorldX(mx);
         basket.x = std::max(worldL + basket.halfW,
                             std::min(worldR - basket.halfW, wx));
     }
 }
 
+// ── NEW: countdown update logic ──
+void updateCountdown(float dt) {
+    // Keep chicken and clouds alive during countdown
+    chicken.x += chicken.vx * dt;
+    if(chicken.x >  0.82f){ chicken.x =  0.82f; chicken.vx *= -1; }
+    if(chicken.x < -0.82f){ chicken.x = -0.82f; chicken.vx *= -1; }
+    chicken.bob = 0.01f * sinf(glutGet(GLUT_ELAPSED_TIME) * 0.008f);
+
+    for(auto& c : clouds){
+        c.x += c.speed * dt;
+        if(c.x > worldR + c.scale * 0.15f)
+            c.x = worldL - c.scale * 0.15f;
+    }
+
+    countdownTimer += dt;
+    if(countdownTimer >= COUNTDOWN_STEP){
+        countdownTimer -= COUNTDOWN_STEP;
+        countdownVal--;
+        // -1 means GO! just finished — switch to Playing
+        if(countdownVal < 0){
+            lastTick    = glutGet(GLUT_ELAPSED_TIME);
+            screenState = Screen::Playing;
+        }
+    }
+}
+
 void updateScene(float dt) {
-    // Always animate clouds and chicken on menu too
     chicken.x += chicken.vx * dt;
     if(chicken.x >  0.82f){ chicken.x =  0.82f; chicken.vx *= -1; }
     if(chicken.x < -0.82f){ chicken.x = -0.82f; chicken.vx *= -1; }
@@ -634,8 +788,14 @@ void updateScene(float dt) {
         }
     }
 
-    // Only run game logic while playing
     if(screenState != Screen::Playing) return;
+
+    windChangeTimer += dt;
+    if(windChangeTimer >= windChangeEvery){
+        windForce       = frand(-maxWindForce, maxWindForce);
+        windChangeEvery = frand(3.f, 6.f);
+        windChangeTimer = 0.f;
+    }
 
     spawnTimer += dt;
     if(spawnTimer >= spawnEvery){
@@ -646,8 +806,9 @@ void updateScene(float dt) {
 
     for(auto& o : objs){
         if(!o.active) continue;
-        o.y   += o.vy     * dt;
-        o.rot += o.rotSpd * dt;
+        o.x   += windForce * 0.8f * dt;
+        o.y   += o.vy      * dt;
+        o.rot += o.rotSpd  * dt;
 
         if(objHitsBasket(basket, o)){
             o.active = false;
@@ -714,7 +875,14 @@ void timerFunc(int) {
     float dt  = (now - lastTick) / 1000.f;
     lastTick  = now;
     dt = std::min(dt, 0.033f);
-    updateScene(dt);
+
+    // ── NEW: dispatch to countdown update when needed ──
+    if(screenState == Screen::Countdown){
+        updateCountdown(dt);
+    } else {
+        updateScene(dt);
+    }
+
     glutPostRedisplay();
     glutTimerFunc(16, timerFunc, 0);
 }
@@ -735,10 +903,7 @@ int main(int argc, char** argv) {
             frand(0.02f, 0.08f)
         });
     }
-
-    // ── NEW: build menu buttons once at startup ──
     setupMenuButtons();
-
     glutDisplayFunc(display);
     glutReshapeFunc(reshape);
     glutSpecialFunc(special);
